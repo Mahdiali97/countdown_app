@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:elegant_notification/elegant_notification.dart';
 import 'dart:async';
 import 'database_service.dart';
 
@@ -148,13 +149,29 @@ class CountdownHomePage extends StatefulWidget {
 class _CountdownHomePageState extends State<CountdownHomePage> {
   List<CountdownEvent> _events = [];
   final DatabaseService _dbService = DatabaseService();
+  Timer? _checkEventsTimer;
+  Set<int> _notifiedEventIds = {};
 
   @override
   void initState() {
     super.initState();
-    _loadEvents();
+    _loadEvents().then((_) {
+      _checkUpcomingEvents();
+      
+      // Set up timer to check events every minute
+      _checkEventsTimer = Timer.periodic(
+        const Duration(minutes: 1),
+        (_) => _checkAllEvents(),
+      );
+    });
   }
 
+  @override
+  void dispose() {
+    _checkEventsTimer?.cancel();
+    super.dispose();
+  }
+  
   Future<void> _loadEvents() async {
     print('Loading events from database...');
     final events = await _dbService.getAllEvents();
@@ -170,12 +187,26 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     await _dbService.insertEvent(event);
     print('Inserted. Reloading events...');
     await _loadEvents();
+    
+    // Show a success notification
+    ElegantNotification.success(
+      title: Text("Success"),
+      description: Text("Event '${event.name}' added successfully"),
+      toastDuration: Duration(seconds: 3),
+    ).show(context);
   }
 
   Future<void> _deleteEvent(int id) async {
     print('Deleting event with id: $id');
     await _dbService.deleteEvent(id);
     await _loadEvents();
+    
+    // Show a notification when event is deleted
+    ElegantNotification.info(
+      title: Text("Event Deleted"),
+      description: Text("Event has been removed successfully"),
+      toastDuration: Duration(seconds: 3),
+    ).show(context);
   }
 
   void _showAddEventDialog() async {
@@ -200,41 +231,136 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     return target.difference(today).inDays;
   }
 
+  void _checkUpcomingEvents() {
+    for (final event in _events) {
+      final daysLeft = _daysLeft(event.date);
+      
+      // Notify for events happening tomorrow
+      if (daysLeft == 1) {
+        ElegantNotification.info(
+          title: Text("Event Tomorrow"),
+          description: Text("'${event.name}' is happening tomorrow!"),
+          icon: Icon(Icons.event_available, color: event.color),
+          toastDuration: Duration(seconds: 5),
+        ).show(context);
+      }
+    }
+  }
+
+  void _checkAllEvents() {
+    _checkUpcomingEvents();
+    _checkArrivedEvents();
+  }
+
+  void _checkArrivedEvents() {
+    final now = DateTime.now();
+    for (final event in _events) {
+      // Check if event has just arrived (within the last minute)
+      final difference = event.date.difference(now);
+      
+      if (difference <= Duration.zero && 
+          difference > Duration(minutes: -1) &&
+          !_notifiedEventIds.contains(event.id)) {
+        
+        // Show notification for arrived event
+        ElegantNotification.success(
+          title: Text("Event Arrived!"),
+          description: Text("'${event.name}' has arrived!"),
+          icon: Icon(Icons.celebration, color: event.color),
+          toastDuration: Duration(seconds: 5),
+        ).show(context);
+        
+        // Mark this event as notified
+        _notifiedEventIds.add(event.id!);
+      }
+    }
+  }
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
-            expandedHeight: 200,
+            expandedHeight: 220,
             floating: false,
             pinned: true,
-            backgroundColor: Colors.deepPurple,
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            stretch: true,
             flexibleSpace: FlexibleSpaceBar(
               title: const Text(
                 'My Events',
                 style: TextStyle(
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.w600,
                   color: Colors.white,
+                  fontSize: 22,
+                  letterSpacing: 0.5,
                 ),
               ),
+              titlePadding: const EdgeInsets.only(left: 20, bottom: 16),
               background: Container(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Colors.deepPurple, Colors.purple.shade300],
+                    colors: [
+                      Colors.deepPurple.shade800,
+                      Colors.purple.shade400,
+                    ],
+                    stops: const [0.3, 1.0],
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
                 ),
-                child: const Center(
-                  child: Icon(
-                    Icons.event_note,
-                    size: 80,
-                    color: Colors.white54,
-                  ),
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -30,
+                      top: -10,
+                      child: Container(
+                        width: 160,
+                        height: 160,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                    const Center(
+                      child: Icon(
+                        Icons.event_note,
+                        size: 80,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              stretchModes: const [
+                StretchMode.zoomBackground,
+                StretchMode.blurBackground,
+              ],
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.search, color: Colors.white),
+                onPressed: () {
+                  // Implement search functionality
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.filter_list, color: Colors.white),
+                onPressed: () {
+                  // Implement filter functionality
+                },
+              ),
+            ],
           ),
           _events.isEmpty
               ? SliverFillRemaining(
@@ -386,7 +512,8 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
                         ),
                       ),
                     );
-                  }, childCount: _events.length),
+                    },
+                    childCount: _events.length),
                 ),
               ),
         ],
@@ -608,7 +735,7 @@ class _AddEventDialogState extends State<AddEventDialog> {
                   },
                   child: Container(
                     width: 40,
-                    height: 40,
+                    height: 50,
                     decoration: BoxDecoration(
                       color: color,
                       shape: BoxShape.circle,
@@ -650,11 +777,12 @@ class _AddEventDialogState extends State<AddEventDialog> {
               print(
                 'Invalid data: name=${_nameController.text}, date=$_eventDate',
               );
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Please enter event name and select a date'),
-                ),
-              );
+              
+              // Show an error notification instead of a SnackBar
+              ElegantNotification.error(
+                title: Text("Invalid Input"),
+                description: Text("Please enter event name and select a date"),
+              ).show(context);
             }
           },
           style: ElevatedButton.styleFrom(
@@ -682,6 +810,7 @@ class _EventCountdownPageState extends State<EventCountdownPage>
   Timer? _timer;
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
+  bool _notificationShown = false;
 
   @override
   void initState() {
@@ -707,12 +836,29 @@ class _EventCountdownPageState extends State<EventCountdownPage>
     final now = DateTime.now();
     setState(() {
       _remaining = widget.event.date.difference(now);
-      if (_remaining.isNegative) {
+      
+      // Check if countdown just reached zero and notification hasn't been shown yet
+      if (_remaining.isNegative || _remaining == Duration.zero) {
         _remaining = Duration.zero;
+        
+        // Show notification only once when the countdown reaches zero
+        if (!_notificationShown) {
+          _showEventArrivedNotification();
+          _notificationShown = true;
+        }
       }
     });
   }
 
+  void _showEventArrivedNotification() {
+    ElegantNotification.success(
+      title: Text("Event Arrived!"),
+      description: Text("'${widget.event.name}' has arrived!"),
+      icon: Icon(Icons.celebration, color: widget.event.color),
+      toastDuration: Duration(seconds: 5),
+    ).show(context);
+  }
+  
   @override
   void dispose() {
     _timer?.cancel();
