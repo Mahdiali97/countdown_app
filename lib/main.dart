@@ -112,12 +112,12 @@ class _SplashScreenState extends State<SplashScreen>
       body: Center(
         child: FadeTransition(
           opacity: _fadeAnimation,
-          child: Column(
+          child: const Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.timer, size: 100, color: Colors.white),
-              const SizedBox(height: 20),
-              const Text(
+              Icon(Icons.timer, size: 100, color: Colors.white),
+              SizedBox(height: 20),
+              Text(
                 'Countdown Master',
                 style: TextStyle(
                   fontSize: 32,
@@ -126,8 +126,8 @@ class _SplashScreenState extends State<SplashScreen>
                   letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 10),
-              const Text(
+              SizedBox(height: 10),
+              Text(
                 'Never miss important moments',
                 style: TextStyle(fontSize: 16, color: Colors.white70),
               ),
@@ -150,7 +150,7 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   List<CountdownEvent> _events = [];
   final DatabaseService _dbService = DatabaseService();
   Timer? _checkEventsTimer;
-  Set<int> _notifiedEventIds = {};
+  final Set<int> _notifiedEventIds = {};
 
   @override
   void initState() {
@@ -190,9 +190,9 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     
     // Show a success notification
     ElegantNotification.success(
-      title: Text("Success"),
+      title: const Text("Success"),
       description: Text("Event '${event.name}' added successfully"),
-      toastDuration: Duration(seconds: 3),
+      toastDuration: const Duration(seconds: 3),
     ).show(context);
   }
 
@@ -203,9 +203,9 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     
     // Show a notification when event is deleted
     ElegantNotification.info(
-      title: Text("Event Deleted"),
-      description: Text("Event has been removed successfully"),
-      toastDuration: Duration(seconds: 3),
+      title: const Text("Event Deleted"),
+      description: const Text("Event has been removed successfully"),
+      toastDuration: const Duration(seconds: 3),
     ).show(context);
   }
 
@@ -237,12 +237,16 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
       
       // Notify for events happening tomorrow
       if (daysLeft == 1) {
-        ElegantNotification.info(
-          title: Text("Event Tomorrow"),
-          description: Text("'${event.name}' is happening tomorrow!"),
-          icon: Icon(Icons.event_available, color: event.color),
-          toastDuration: Duration(seconds: 5),
-        ).show(context);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ElegantNotification.info(
+              title: const Text("Event Tomorrow"),
+              description: Text("'${event.name}' is happening tomorrow!"),
+              icon: Icon(Icons.event_available, color: event.color),
+              toastDuration: const Duration(seconds: 5),
+            ).show(context);
+          }
+        });
       }
     }
   }
@@ -259,16 +263,20 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
       final difference = event.date.difference(now);
       
       if (difference <= Duration.zero && 
-          difference > Duration(minutes: -1) &&
+          difference > const Duration(minutes: -1) &&
           !_notifiedEventIds.contains(event.id)) {
         
         // Show notification for arrived event
-        ElegantNotification.success(
-          title: Text("Event Arrived!"),
-          description: Text("'${event.name}' has arrived!"),
-          icon: Icon(Icons.celebration, color: event.color),
-          toastDuration: Duration(seconds: 5),
-        ).show(context);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ElegantNotification.success(
+              title: const Text("Event Arrived!"),
+              description: Text("'${event.name}' has arrived!"),
+              icon: Icon(Icons.celebration, color: event.color),
+              toastDuration: const Duration(seconds: 5),
+            ).show(context);
+          }
+        });
         
         // Mark this event as notified
         _notifiedEventIds.add(event.id!);
@@ -780,8 +788,8 @@ class _AddEventDialogState extends State<AddEventDialog> {
               
               // Show an error notification instead of a SnackBar
               ElegantNotification.error(
-                title: Text("Invalid Input"),
-                description: Text("Please enter event name and select a date"),
+                title: const Text("Invalid Input"),
+                description: const Text("Please enter event name and select a date"),
               ).show(context);
             }
           },
@@ -851,12 +859,17 @@ class _EventCountdownPageState extends State<EventCountdownPage>
   }
 
   void _showEventArrivedNotification() {
-    ElegantNotification.success(
-      title: Text("Event Arrived!"),
-      description: Text("'${widget.event.name}' has arrived!"),
-      icon: Icon(Icons.celebration, color: widget.event.color),
-      toastDuration: Duration(seconds: 5),
-    ).show(context);
+    // Use addPostFrameCallback to show notification after build is complete
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ElegantNotification.success(
+          title: const Text("Event Arrived!"),
+          description: Text("'${widget.event.name}' has arrived!"),
+          icon: Icon(Icons.celebration, color: widget.event.color),
+          toastDuration: const Duration(seconds: 5),
+        ).show(context);
+      }
+    });
   }
   
   @override
@@ -907,16 +920,16 @@ class _EventCountdownPageState extends State<EventCountdownPage>
                 child: Center(
                   child:
                       _remaining == Duration.zero
-                          ? Column(
+                          ? const Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(
+                              Icon(
                                 Icons.celebration,
                                 size: 100,
                                 color: Colors.white,
                               ),
-                              const SizedBox(height: 20),
-                              const Text(
+                              SizedBox(height: 20),
+                              Text(
                                 'Event has arrived!',
                                 style: TextStyle(
                                   fontSize: 32,
