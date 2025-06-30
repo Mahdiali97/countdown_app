@@ -1,14 +1,19 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:elegant_notification/elegant_notification.dart';
-import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
 import 'database_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    // options: DefaultFirebaseOptions.currentPlatform, // if using FlutterFire CLI
+  );
   runApp(const MyApp());
 }
 
 class CountdownEvent {
-  final int? id;
+  final String? id; // Firestore uses String IDs
   final String name;
   final DateTime date;
   final String category;
@@ -24,7 +29,6 @@ class CountdownEvent {
 
   Map<String, dynamic> toMap() {
     return {
-      'id': id,
       'name': name,
       'date': date.millisecondsSinceEpoch,
       'category': category,
@@ -32,9 +36,9 @@ class CountdownEvent {
     };
   }
 
-  factory CountdownEvent.fromMap(Map<String, dynamic> map) {
+  factory CountdownEvent.fromMap(Map<String, dynamic> map, {String? id}) {
     return CountdownEvent(
-      id: map['id'],
+      id: id,
       name: map['name'],
       date: DateTime.fromMillisecondsSinceEpoch(map['date']),
       category: map['category'] ?? 'General',
@@ -150,15 +154,26 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   List<CountdownEvent> _events = [];
   final DatabaseService _dbService = DatabaseService();
   Timer? _checkEventsTimer;
-  final Set<int> _notifiedEventIds = {};
+  final Set<String> _notifiedEventIds = {};
+
+  // Remove: String _searchQuery = '';
+  String? _selectedCategory;
+  final List<String> _allCategories = [
+    'General',
+    'Birthday',
+    'Anniversary',
+    'Holiday',
+    'Work',
+    'Personal',
+    'Travel',
+    'Other',
+  ];
 
   @override
   void initState() {
     super.initState();
     _loadEvents().then((_) {
       _checkUpcomingEvents();
-      
-      // Set up timer to check events every minute
       _checkEventsTimer = Timer.periodic(
         const Duration(minutes: 1),
         (_) => _checkAllEvents(),
@@ -171,24 +186,17 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     _checkEventsTimer?.cancel();
     super.dispose();
   }
-  
+
   Future<void> _loadEvents() async {
-    print('Loading events from database...');
     final events = await _dbService.getAllEvents();
-    print('Loaded ${events.length} events from database');
     setState(() {
       _events = events;
     });
-    print('UI updated with ${_events.length} events');
   }
 
   Future<void> _addEvent(CountdownEvent event) async {
-    print('Adding event: ${event.name}, Date: ${event.date}');
     await _dbService.insertEvent(event);
-    print('Inserted. Reloading events...');
     await _loadEvents();
-    
-    // Show a success notification
     ElegantNotification.success(
       title: const Text("Success"),
       description: Text("Event '${event.name}' added successfully"),
@@ -196,12 +204,9 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     ).show(context);
   }
 
-  Future<void> _deleteEvent(int id) async {
-    print('Deleting event with id: $id');
+  Future<void> _deleteEvent(String id) async {
     await _dbService.deleteEvent(id);
     await _loadEvents();
-    
-    // Show a notification when event is deleted
     ElegantNotification.info(
       title: const Text("Event Deleted"),
       description: const Text("Event has been removed successfully"),
@@ -210,17 +215,12 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   }
 
   void _showAddEventDialog() async {
-    print('Opening add event dialog');
     final CountdownEvent? newEvent = await showDialog<CountdownEvent>(
       context: context,
       builder: (context) => const AddEventDialog(),
     );
-    print('Dialog returned: $newEvent');
     if (newEvent != null) {
-      print('Adding new event: ${newEvent.name}');
       await _addEvent(newEvent);
-    } else {
-      print('No event was created (user cancelled or invalid data)');
     }
   }
 
@@ -234,8 +234,6 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   void _checkUpcomingEvents() {
     for (final event in _events) {
       final daysLeft = _daysLeft(event.date);
-      
-      // Notify for events happening tomorrow
       if (daysLeft == 1) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
@@ -259,14 +257,10 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   void _checkArrivedEvents() {
     final now = DateTime.now();
     for (final event in _events) {
-      // Check if event has just arrived (within the last minute)
       final difference = event.date.difference(now);
-      
-      if (difference <= Duration.zero && 
+      if (difference <= Duration.zero &&
           difference > const Duration(minutes: -1) &&
           !_notifiedEventIds.contains(event.id)) {
-        
-        // Show notification for arrived event
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             ElegantNotification.success(
@@ -277,13 +271,22 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
             ).show(context);
           }
         });
-        
-        // Mark this event as notified
-        _notifiedEventIds.add(event.id!);
+        if (event.id != null) {
+          _notifiedEventIds.add(event.id!);
+        }
       }
     }
   }
-  
+
+  // Filtered events getter
+  List<CountdownEvent> get _filteredEvents {
+    return _events.where((event) {
+      final matchesCategory = _selectedCategory == null ||
+          event.category == _selectedCategory;
+      return matchesCategory;
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -297,9 +300,11 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
             elevation: 0,
             stretch: true,
             flexibleSpace: FlexibleSpaceBar(
-              title: const Text(
-                'My Events',
-                style: TextStyle(
+              title: Text(
+                _selectedCategory == null
+                    ? 'My Events'
+                    : 'My Events (${_selectedCategory!})',
+                style: const TextStyle(
                   fontWeight: FontWeight.w600,
                   color: Colors.white,
                   fontSize: 22,
@@ -357,173 +362,183 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
             ),
             actions: [
               IconButton(
-                icon: const Icon(Icons.search, color: Colors.white),
-                onPressed: () {
-                  // Implement search functionality
-                },
-              ),
-              IconButton(
                 icon: const Icon(Icons.filter_list, color: Colors.white),
-                onPressed: () {
-                  // Implement filter functionality
+                onPressed: () async {
+                  final selected = await showDialog<String>(
+                    context: context,
+                    builder: (context) => SimpleDialog(
+                      title: const Text('Filter by Category'),
+                      children: [
+                        SimpleDialogOption(
+                          child: const Text('All'),
+                          onPressed: () => Navigator.pop(context, null),
+                        ),
+                        ..._allCategories.map((cat) => SimpleDialogOption(
+                          child: Text(cat),
+                          onPressed: () => Navigator.pop(context, cat),
+                        )),
+                      ],
+                    ),
+                  );
+                  setState(() {
+                    _selectedCategory = selected;
+                  });
                 },
               ),
             ],
           ),
           _events.isEmpty
               ? SliverFillRemaining(
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.event_busy,
-                        size: 80,
-                        color: Colors.grey.shade400,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No events yet!',
-                        style: TextStyle(
-                          fontSize: 24,
-                          color: Colors.grey.shade600,
-                          fontWeight: FontWeight.bold,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.event_busy,
+                          size: 80,
+                          color: Colors.grey.shade400,
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Tap the + button to add your first event',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey.shade500,
+                        const SizedBox(height: 16),
+                        Text(
+                          'No events yet!',
+                          style: TextStyle(
+                            fontSize: 24,
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap the + button to add your first event',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              )
+                )
               : SliverPadding(
-                padding: const EdgeInsets.all(16),
-                sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    childAspectRatio: 0.8,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                  ),
-                  delegate: SliverChildBuilderDelegate((context, index) {
-                    final event = _events[index];
-                    final daysLeft = _daysLeft(event.date);
-                    return GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder:
-                                (context) => EventCountdownPage(event: event),
-                          ),
-                        );
-                      },
-                      child: Card(
-                        elevation: 8,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(16),
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                event.color.withOpacity(0.8),
-                                event.color.withOpacity(0.6),
-                              ],
+                  padding: const EdgeInsets.all(16),
+                  sliver: SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      childAspectRatio: 0.8,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                    ),
+                    delegate: SliverChildBuilderDelegate((context, index) {
+                      final event = _filteredEvents[index];
+                      final daysLeft = _daysLeft(event.date);
+                      return GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => EventCountdownPage(event: event),
                             ),
+                          );
+                        },
+                        child: Card(
+                          elevation: 8,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
                           ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Icon(
-                                      Icons.event,
-                                      color: Colors.white,
-                                      size: 24,
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.white70,
-                                        size: 20,
-                                      ),
-                                      onPressed: () {
-                                        _deleteEvent(event.id!);
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                Column(
-                                  children: [
-                                    Text(
-                                      event.name,
-                                      style: const TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  event.color.withOpacity(0.8),
+                                  event.color.withOpacity(0.6),
+                                ],
+                              ),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Icon(
+                                        Icons.event,
                                         color: Colors.white,
+                                        size: 24,
                                       ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 6,
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.delete,
+                                          color: Colors.white70,
+                                          size: 20,
+                                        ),
+                                        onPressed: () {
+                                          if (event.id != null) {
+                                            _deleteEvent(event.id!);
+                                          }
+                                        },
                                       ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.3),
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                      child: Text(
-                                        event.category,
+                                    ],
+                                  ),
+                                  Column(
+                                    children: [
+                                      Text(
+                                        event.name,
                                         style: const TextStyle(
-                                          fontSize: 12,
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
                                           color: Colors.white,
-                                          fontWeight: FontWeight.w500,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.3),
+                                          borderRadius: BorderRadius.circular(20),
+                                        ),
+                                        child: Text(
+                                          event.category,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w500,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                                Text(
-                                  daysLeft >= 0
-                                      ? '$daysLeft days left'
-                                      : 'Event passed',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color:
-                                        daysLeft >= 0
-                                            ? Colors.white
-                                            : Colors.red.shade200,
-                                    fontWeight: FontWeight.w600,
+                                    ],
                                   ),
-                                ),
-                              ],
+                                  Text(
+                                    daysLeft >= 0
+                                        ? '$daysLeft days left'
+                                        : 'Event passed',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      color: daysLeft >= 0
+                                          ? Colors.white
+                                          : Colors.red.shade200,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                    },
-                    childCount: _events.length),
+                      );
+                    }, childCount: _filteredEvents.length),
+                  ),
                 ),
-              ),
         ],
       ),
       floatingActionButton: Column(
@@ -532,16 +547,13 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
           FloatingActionButton(
             heroTag: "debug",
             onPressed: () async {
-              print('=== DEBUG BUTTON PRESSED ===');
               await _dbService.debugDatabase();
-
               final testEvent = CountdownEvent(
                 name: 'Test Event ${DateTime.now().millisecond}',
                 date: DateTime.now().add(const Duration(days: 7)),
                 category: 'Test',
                 color: Colors.red,
               );
-              print('Creating test event: $testEvent');
               await _addEvent(testEvent);
             },
             backgroundColor: Colors.grey,
@@ -677,7 +689,6 @@ class _AddEventDialogState extends State<AddEventDialog> {
                         lastDate: DateTime(2030),
                       );
                       if (picked != null) {
-                        print('Date picked: $picked');
                         setState(() {
                           _eventDate = picked;
                         });
@@ -714,7 +725,6 @@ class _AddEventDialogState extends State<AddEventDialog> {
                         initialTime: TimeOfDay.now(),
                       );
                       if (picked != null) {
-                        print('Time picked: $picked');
                         setState(() {
                           _eventTime = picked;
                         });
@@ -764,7 +774,6 @@ class _AddEventDialogState extends State<AddEventDialog> {
       actions: [
         TextButton(
           onPressed: () {
-            print('Dialog cancelled');
             Navigator.pop(context);
           },
           child: const Text('Cancel'),
@@ -779,14 +788,8 @@ class _AddEventDialogState extends State<AddEventDialog> {
                 category: _category,
                 color: _selectedColor,
               );
-              print('Creating event from dialog: $newEvent');
               Navigator.pop(context, newEvent);
             } else {
-              print(
-                'Invalid data: name=${_nameController.text}, date=$_eventDate',
-              );
-              
-              // Show an error notification instead of a SnackBar
               ElegantNotification.error(
                 title: const Text("Invalid Input"),
                 description: const Text("Please enter event name and select a date"),
@@ -844,12 +847,8 @@ class _EventCountdownPageState extends State<EventCountdownPage>
     final now = DateTime.now();
     setState(() {
       _remaining = widget.event.date.difference(now);
-      
-      // Check if countdown just reached zero and notification hasn't been shown yet
       if (_remaining.isNegative || _remaining == Duration.zero) {
         _remaining = Duration.zero;
-        
-        // Show notification only once when the countdown reaches zero
         if (!_notificationShown) {
           _showEventArrivedNotification();
           _notificationShown = true;
@@ -859,7 +858,6 @@ class _EventCountdownPageState extends State<EventCountdownPage>
   }
 
   void _showEventArrivedNotification() {
-    // Use addPostFrameCallback to show notification after build is complete
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         ElegantNotification.success(
@@ -871,7 +869,7 @@ class _EventCountdownPageState extends State<EventCountdownPage>
       }
     });
   }
-  
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -918,94 +916,93 @@ class _EventCountdownPageState extends State<EventCountdownPage>
               ),
               Expanded(
                 child: Center(
-                  child:
-                      _remaining == Duration.zero
-                          ? const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.celebration,
-                                size: 100,
+                  child: _remaining == Duration.zero
+                      ? const Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.celebration,
+                              size: 100,
+                              color: Colors.white,
+                            ),
+                            SizedBox(height: 20),
+                            Text(
+                              'Event has arrived!',
+                              style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
                                 color: Colors.white,
                               ),
-                              SizedBox(height: 20),
-                              Text(
-                                'Event has arrived!',
-                                style: TextStyle(
-                                  fontSize: 32,
-                                  fontWeight: FontWeight.bold,
+                            ),
+                          ],
+                        )
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text(
+                              'Countdown',
+                              style: TextStyle(
+                                fontSize: 36,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            ScaleTransition(
+                              scale: _pulseAnimation,
+                              child: Container(
+                                padding: const EdgeInsets.all(20),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.timer,
+                                  size: 80,
                                   color: Colors.white,
                                 ),
                               ),
-                            ],
-                          )
-                          : Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Text(
-                                'Countdown',
-                                style: TextStyle(
+                            ),
+                            const SizedBox(height: 40),
+                            const Text(
+                              'Time Remaining',
+                              style: TextStyle(
+                                fontSize: 24,
+                                color: Colors.white70,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 30,
+                                vertical: 20,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                _formatDuration(_remaining),
+                                style: const TextStyle(
                                   fontSize: 36,
                                   fontWeight: FontWeight.bold,
                                   color: Colors.white,
-                                  letterSpacing: 2,
+                                  fontFamily: 'monospace',
                                 ),
                               ),
-                              const SizedBox(height: 24),
-                              ScaleTransition(
-                                scale: _pulseAnimation,
-                                child: Container(
-                                  padding: const EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.2),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.timer,
-                                    size: 80,
-                                    color: Colors.white,
-                                  ),
-                                ),
+                            ),
+                            const SizedBox(height: 20),
+                            const Text(
+                              'Days : Hours : Minutes : Seconds',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.white70,
                               ),
-                              const SizedBox(height: 40),
-                              const Text(
-                                'Time Remaining',
-                                style: TextStyle(
-                                  fontSize: 24,
-                                  color: Colors.white70,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 30,
-                                  vertical: 20,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text(
-                                  _formatDuration(_remaining),
-                                  style: const TextStyle(
-                                    fontSize: 36,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                    fontFamily: 'monospace',
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              const Text(
-                                'Days : Hours : Minutes : Seconds',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                            ],
-                          ),
+                            ),
+                          ],
+                        ),
                 ),
               ),
             ],
@@ -1015,3 +1012,5 @@ class _EventCountdownPageState extends State<EventCountdownPage>
     );
   }
 }
+
+
