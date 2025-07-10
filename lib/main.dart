@@ -1,16 +1,28 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:elegant_notification/elegant_notification.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 import 'database_service.dart';
+import 'package:elegant_notification/elegant_notification.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    // options: DefaultFirebaseOptions.currentPlatform, // if using FlutterFire CLI
-  );
+  await Firebase.initializeApp();
+
+  // Initialize timezone before notifications
+  tz.initializeTimeZones();
+  tz.setLocalLocation(tz.getLocation('Asia/Kuala_Lumpur'));
+
+  await NotificationService.init(); // Local notification setup
+
   runApp(const MyApp());
 }
+
+// Firebase Messaging background handler
+
 
 class CountdownEvent {
   final String? id; // Firestore uses String IDs
@@ -197,21 +209,34 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
   Future<void> _addEvent(CountdownEvent event) async {
     await _dbService.insertEvent(event);
     await _loadEvents();
-    ElegantNotification.success(
-      title: const Text("Success"),
-      description: Text("Event '${event.name}' added successfully"),
-      toastDuration: const Duration(seconds: 3),
-    ).show(context);
+    // Show system notification
+    NotificationService.showSimpleNotification(
+      title: "Success",
+      body: "Event '${event.name}' added successfully",
+    );
+    // Show in-app notification
+    _showInAppNotification(context, "Success", "Event '${event.name}' added successfully");
+    await NotificationService.scheduleEventReminder(event);
   }
 
   Future<void> _deleteEvent(String id) async {
     await _dbService.deleteEvent(id);
     await _loadEvents();
-    ElegantNotification.info(
-      title: const Text("Event Deleted"),
-      description: const Text("Event has been removed successfully"),
-      toastDuration: const Duration(seconds: 3),
-    ).show(context);
+    NotificationService.showSimpleNotification(
+      title: "Event Deleted",
+      body: "Event has been removed successfully",
+    );
+    _showInAppNotification(context, "Event Deleted", "Event has been removed successfully");
+  }
+
+  Future<void> _editEvent(String id, CountdownEvent updatedEvent) async {
+    await _dbService.updateEvent(id, updatedEvent);
+    await _loadEvents();
+    NotificationService.showSimpleNotification(
+      title: "Event Updated",
+      body: "Event '${updatedEvent.name}' updated successfully",
+    );
+    _showInAppNotification(context, "Event Updated", "Event '${updatedEvent.name}' updated successfully");
   }
 
   void _showAddEventDialog() async {
@@ -235,16 +260,10 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
     for (final event in _events) {
       final daysLeft = _daysLeft(event.date);
       if (daysLeft == 1) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            ElegantNotification.info(
-              title: const Text("Event Tomorrow"),
-              description: Text("'${event.name}' is happening tomorrow!"),
-              icon: Icon(Icons.event_available, color: event.color),
-              toastDuration: const Duration(seconds: 5),
-            ).show(context);
-          }
-        });
+        NotificationService.showSimpleNotification(
+          title: "Event Tomorrow",
+          body: "'${event.name}' is happening tomorrow!",
+        );
       }
     }
   }
@@ -261,16 +280,10 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
       if (difference <= Duration.zero &&
           difference > const Duration(minutes: -1) &&
           !_notifiedEventIds.contains(event.id)) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            ElegantNotification.success(
-              title: const Text("Event Arrived!"),
-              description: Text("'${event.name}' has arrived!"),
-              icon: Icon(Icons.celebration, color: event.color),
-              toastDuration: const Duration(seconds: 5),
-            ).show(context);
-          }
-        });
+        NotificationService.showSimpleNotification(
+          title: "Event Arrived!",
+          body: "'${event.name}' has arrived!",
+        );
         if (event.id != null) {
           _notifiedEventIds.add(event.id!);
         }
@@ -428,115 +441,142 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
                       crossAxisSpacing: 16,
                       mainAxisSpacing: 16,
                     ),
-                    delegate: SliverChildBuilderDelegate((context, index) {
-                      final event = _filteredEvents[index];
-                      final daysLeft = _daysLeft(event.date);
-                      return GestureDetector(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => EventCountdownPage(event: event),
-                            ),
-                          );
-                        },
-                        child: Card(
-                          elevation: 8,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  event.color.withOpacity(0.8),
-                                  event.color.withOpacity(0.6),
-                                ],
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final event = _filteredEvents[index];
+                        final daysLeft = _daysLeft(event.date);
+                        return GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => EventCountdownPage(event: event),
                               ),
+                            );
+                          },
+                          child: Card(
+                            elevation: 8,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      const Icon(
-                                        Icons.event,
-                                        color: Colors.white,
-                                        size: 24,
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete,
-                                          color: Colors.white70,
-                                          size: 20,
-                                        ),
-                                        onPressed: () {
-                                          if (event.id != null) {
-                                            _deleteEvent(event.id!);
-                                          }
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                  Column(
-                                    children: [
-                                      Text(
-                                        event.name,
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    event.color.withOpacity(0.8),
+                                    event.color.withOpacity(0.6),
+                                  ],
+                                ),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Icon(
+                                          Icons.event,
                                           color: Colors.white,
+                                          size: 24,
                                         ),
-                                        textAlign: TextAlign.center,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 6,
+                                        Row(
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.edit,
+                                                color: Colors.white70,
+                                                size: 20,
+                                              ),
+                                              onPressed: () async {
+                                                if (event.id != null) {
+                                                  final updatedEvent = await showDialog<CountdownEvent>(
+                                                    context: context,
+                                                    builder: (context) => AddEventDialog(
+                                                      event: event,
+                                                    ),
+                                                  );
+                                                  if (updatedEvent != null) {
+                                                    await _editEvent(event.id!, updatedEvent);
+                                                  }
+                                                }
+                                              },
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.delete,
+                                                color: Colors.white70,
+                                                size: 20,
+                                              ),
+                                              onPressed: () {
+                                                if (event.id != null) {
+                                                  _confirmAndDeleteEvent(event.id!);
+                                                }
+                                              },
+                                            ),
+                                          ],
                                         ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.3),
-                                          borderRadius: BorderRadius.circular(20),
-                                        ),
-                                        child: Text(
-                                          event.category,
+                                      ],
+                                    ),
+                                    Column(
+                                      children: [
+                                        Text(
+                                          event.name,
                                           style: const TextStyle(
-                                            fontSize: 12,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
                                             color: Colors.white,
-                                            fontWeight: FontWeight.w500,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 6,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.3),
+                                            borderRadius: BorderRadius.circular(20),
+                                          ),
+                                          child: Text(
+                                            event.category,
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w500,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                    ],
-                                  ),
-                                  Text(
-                                    daysLeft >= 0
-                                        ? '$daysLeft days left'
-                                        : 'Event passed',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      color: daysLeft >= 0
-                                          ? Colors.white
-                                          : Colors.red.shade200,
-                                      fontWeight: FontWeight.w600,
+                                      ],
                                     ),
-                                  ),
-                                ],
+                                    Text(
+                                      daysLeft >= 0
+                                          ? '$daysLeft days left'
+                                          : 'Event passed',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        color: daysLeft >= 0
+                                            ? Colors.white
+                                            : Colors.red.shade200,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      );
-                    }, childCount: _filteredEvents.length),
+                          )
+                        );
+                      },
+                      childCount: _filteredEvents.length,
+                    ),
                   ),
                 ),
         ],
@@ -574,17 +614,41 @@ class _CountdownHomePageState extends State<CountdownHomePage> {
       ),
     );
   }
+
+  Future<void> _confirmAndDeleteEvent(String id) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Event'),
+        content: const Text('Are you sure you want to delete this event?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete == true) {
+      await _deleteEvent(id);
+    }
+  }
 }
 
 class AddEventDialog extends StatefulWidget {
-  const AddEventDialog({super.key});
+  final CountdownEvent? event;
+  const AddEventDialog({super.key, this.event});
 
   @override
   State<AddEventDialog> createState() => _AddEventDialogState();
 }
 
 class _AddEventDialogState extends State<AddEventDialog> {
-  final _nameController = TextEditingController();
+  late TextEditingController _nameController;
   DateTime? _eventDate;
   TimeOfDay? _eventTime;
   String _category = 'General';
@@ -626,10 +690,22 @@ class _AddEventDialogState extends State<AddEventDialog> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.event?.name ?? '');
+    _eventDate = widget.event?.date;
+    _eventTime = widget.event != null
+        ? TimeOfDay(hour: widget.event!.date.hour, minute: widget.event!.date.minute)
+        : null;
+    _category = widget.event?.category ?? 'General';
+    _selectedColor = widget.event?.color ?? Colors.blue;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      title: const Text('Add New Event'),
+      title: Text(widget.event == null ? 'Add New Event' : 'Edit Event'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -790,10 +866,11 @@ class _AddEventDialogState extends State<AddEventDialog> {
               );
               Navigator.pop(context, newEvent);
             } else {
-              ElegantNotification.error(
-                title: const Text("Invalid Input"),
-                description: const Text("Please enter event name and select a date"),
-              ).show(context);
+              NotificationService.showSimpleNotification(
+                title: "Invalid Input",
+                body: "Please enter event name and select a date",
+              );
+              _showInAppNotification(context, "Invalid Input", "Please enter event name and select a date");
             }
           },
           style: ElevatedButton.styleFrom(
@@ -845,29 +922,33 @@ class _EventCountdownPageState extends State<EventCountdownPage>
 
   void _updateRemaining() {
     final now = DateTime.now();
+    if (!mounted) return;
+
+    final newRemaining = widget.event.date.difference(now);
+    bool shouldShowNotification = false;
+
     setState(() {
-      _remaining = widget.event.date.difference(now);
-      if (_remaining.isNegative || _remaining == Duration.zero) {
-        _remaining = Duration.zero;
-        if (!_notificationShown) {
-          _showEventArrivedNotification();
-          _notificationShown = true;
-        }
+      _remaining = newRemaining.isNegative ? Duration.zero : newRemaining;
+      if (_remaining == Duration.zero && !_notificationShown) {
+        shouldShowNotification = true;
+        _notificationShown = true;
       }
     });
+
+    // Show notification after build is complete
+    if (shouldShowNotification) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showEventArrivedNotification();
+      });
+    }
   }
 
   void _showEventArrivedNotification() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        ElegantNotification.success(
-          title: const Text("Event Arrived!"),
-          description: Text("'${widget.event.name}' has arrived!"),
-          icon: Icon(Icons.celebration, color: widget.event.color),
-          toastDuration: const Duration(seconds: 5),
-        ).show(context);
-      }
-    });
+    NotificationService.showSimpleNotification(
+      title: "Event Arrived!",
+      body: "'${widget.event.name}' has arrived!",
+    );
+    _showInAppNotification(context, "Event Arrived!", "'${widget.event.name}' has arrived!");
   }
 
   @override
@@ -1013,4 +1094,98 @@ class _EventCountdownPageState extends State<EventCountdownPage>
   }
 }
 
+class NotificationService {
+  static final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+
+  static Future<void> init() async {
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const settings = InitializationSettings(android: android);
+    await _plugin.initialize(settings);
+
+    // Request permission for Android 13+
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
+    }
+
+    tz.initializeTimeZones();
+    tz.setLocalLocation(tz.getLocation('Asia/Kuala_Lumpur'));
+  }
+
+  static Future<void> showSimpleNotification({
+    required String title,
+    required String body,
+  }) async {
+    const androidDetails = AndroidNotificationDetails(
+      'countdown_channel',
+      'Countdown Notifications',
+      channelDescription: 'Shows countdown reminders',
+      importance: Importance.max,
+      priority: Priority.high,
+    );
+    const details = NotificationDetails(android: androidDetails);
+
+    await _plugin.show(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      body,
+      details,
+    );
+  }
+
+  static Future<void> scheduleEventReminder(CountdownEvent event) async {
+    // One day before
+    final oneDayBefore = event.date.subtract(const Duration(days: 1));
+    if (oneDayBefore.isAfter(DateTime.now())) {
+      await NotificationService.scheduleLocalNotification(
+        id: event.hashCode ^ 1, // Unique ID for one-day reminder
+        title: 'Event Reminder',
+        body: '"${event.name}" is happening tomorrow!',
+        scheduledTime: oneDayBefore,
+      );
+    }
+
+    // One hour before
+    final oneHourBefore = event.date.subtract(const Duration(hours: 1));
+    if (oneHourBefore.isAfter(DateTime.now())) {
+      await NotificationService.scheduleLocalNotification(
+        id: event.hashCode ^ 2, // Unique ID for one-hour reminder
+        title: 'Upcoming Event',
+        body: '"${event.name}" starts in 1 hour!',
+        scheduledTime: oneHourBefore,
+      );
+    }
+  }
+
+  static Future<void> scheduleLocalNotification({
+    required int id,
+    required String title,
+    required String body,
+    required DateTime scheduledTime,
+  }) async {
+    await _plugin.zonedSchedule(
+      id,
+      title,
+      body,
+      tz.TZDateTime.from(scheduledTime, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'countdown_channel',
+          'Countdown Notifications',
+          channelDescription: 'Countdown scheduled alerts',
+          importance: Importance.max,
+          priority: Priority.high,
+        ),
+      ),
+      androidAllowWhileIdle: true,
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
+}
+
+void _showInAppNotification(BuildContext context, String title, String message) {
+  ElegantNotification.success(
+    title: Text(title),
+    description: Text(message),
+  ).show(context);
+}
 

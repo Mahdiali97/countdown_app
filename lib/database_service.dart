@@ -21,6 +21,12 @@ class DatabaseService {
     await eventsCollection.doc(id).delete();
   }
 
+  Future<void> updateEvent(String id, CountdownEvent event) async {
+    // For Firestore:
+    await FirebaseFirestore.instance.collection('events').doc(id).update(event.toMap());
+    // For Hive or Sqflite, update the record with the given id.
+  }
+
   // Optional: For debugging
   Future<void> debugDatabase() async {
     final events = await getAllEvents();
